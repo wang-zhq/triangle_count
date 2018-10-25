@@ -1,0 +1,15 @@
+﻿编译及运行说明：
+1. 本方案目前只有一个C语言格式源文件， countri.c。
+2. 编译请在源文件目录下，运行命令：
+  gcc -fopenmp -o countri countri.c -O3
+  或者 make all
+3. 运行程序请用： 
+  ./countri -f [图数据文件]
+  例如： ./countri -f soc-LiveJournal1.bin
+4. 测试环境
+  CPU: Intel Xeon E5-2680 x2
+  内存：32GB
+  系统：Ubuntu 14.04
+5. 运行结果
+  [1] soc-LiveJournal1.bin  三角形数：285730264  (用时  30 sec.)
+  [2] s24.kron.edgelist  三角形数： 10286638314  (用时 400 sec.)
