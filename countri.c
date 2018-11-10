@@ -26,79 +26,13 @@ unsigned long long get_filesize(char const *filename)
     return size;
 }
 
-// 快速索引判断函数
-int comp_ul(const void *a, const void *b)
+int comp_ll(const void *a, const void *b)
 {
-    if (*(unsigned long *)a < *(unsigned long *)b)
+    if (*(unsigned long long *)a < *(unsigned long long *)b)
         return -1;
     else
         return 1;
 }
-
-void par_sort(long long n, unsigned long dim, unsigned long *a, unsigned long *b, unsigned long long *a_loc)
-{
-    long i;
-    unsigned long *a_count;
-    a_count = (unsigned long *)malloc(sizeof(unsigned long)*dim);
-
-    #pragma omp parallel for
-    for (i = 0; i < dim; i++)
-        a_count[i] = 0;
-    
-    for (i = 0; i < n; i++)
-        a_count[a[i]]++;
-
-    a_loc[0] = 0;
-    for (i = 1; i <= dim; i++)
-        a_loc[i] = a_loc[i-1] + a_count[i-1];
-    
-    free(a_count);
-
-    unsigned long *b_count;
-    b_count = (unsigned long *)malloc(sizeof(unsigned long)*dim);
-    #pragma omp parallel for
-    for (i = 0; i < dim; i++)
-        b_count[i] = 0;
-
-    unsigned long *b_sort;
-    b_sort = (unsigned long *)malloc(sizeof(unsigned long)*n);
-    long long a_loc_new;
-    for (i = 0; i < n; i++)
-    {
-        a_loc_new = a_loc[a[i]] + b_count[a[i]];
-        b_sort[a_loc_new] = b[i];
-        b_count[a[i]]++;
-    }
-    
-    free(b_count);
-
-    #pragma omp parallel for
-    for (i = 0; i < dim; i++)
-    {
-        long loc_0 = a_loc[i];
-        long loc_n = a_loc[i+1];
-        long ln = loc_n - loc_0;
-        if (ln > 0)
-        {
-            unsigned long *b_sec;
-            b_sec = (unsigned long *)malloc(sizeof(unsigned long)*(ln));
-            long k;
-            for (k = 0; k < ln; k++)
-            {
-                b_sec[k] = b_sort[loc_0+k];
-                a[loc_0+k] = i;
-            }
-            
-            qsort(b_sec, ln, sizeof(unsigned long), comp_ul);
-            for (k = 0; k < ln; k++)
-                b[loc_0+k] = b_sec[k];
-            free(b_sec);
-        }
-    }
-
-    free(b_sort);
-}
-
 
 int main(int argc, char const *argv[])
 {
@@ -139,126 +73,147 @@ int main(int argc, char const *argv[])
     printf("Data is loaded successfully. There are %lld edges.\n", n_edge);
 
     long long i;
-    unsigned long *front;
-    unsigned long *behind;
-    front = (unsigned long *)malloc(sizeof(unsigned long)*n_edge);
-    behind = (unsigned long *)malloc(sizeof(unsigned long)*n_edge);
-
-    unsigned long dim = 0;
-
-    //#pragma omp parallel for
+    unsigned int *front;
+    unsigned int *behind;
+    front = (unsigned int *)malloc(sizeof(unsigned int)*n_edge);
+    behind = (unsigned int *)malloc(sizeof(unsigned int)*n_edge);
+    #pragma omp parallel for
     for (i = 0; i < n_edge; i++)
     {
-        if (endpoints[2*i] < endpoints[2*i+1])
-        {
-            front[i] = endpoints[2*i];
-            behind[i] = endpoints[2*i+1];
-            if (endpoints[2*i+1] > dim)
-                dim = endpoints[2*i+1];
-        }
-        else
+        if (endpoints[2*i] > endpoints[2*i+1])
         {
             front[i] = endpoints[2*i+1];
             behind[i] = endpoints[2*i];
-            if (endpoints[2*i] > dim)
-                dim = endpoints[2*i];
+        }
+        else
+        {
+            front[i] = endpoints[2*i];
+            behind[i] = endpoints[2*i+1];
         }
     }
-    dim++;
-    printf("The quantity of nodes is %ld.\n", dim);
-
+    // 关闭镜像通道
     munmap(endpoints, dt_size);
     close(fp);
 
+    unsigned long long dim = 0;
+    //#pragma omp parallel for reduction(>:dim)
+    for (i = 0; i < n_edge; i++)
+        dim = (behind[i] > dim) ? behind[i] : dim;
+
+    dim++;
+    printf("The quantity of nodes is %lld.\n", dim);
+
+    unsigned long long * edges;
+    edges = (unsigned long long *)malloc(sizeof(unsigned long long)*n_edge);
+    #pragma omp parallel for
+    for (i = 0; i < n_edge; i++)
+        edges[i] = front[i]*dim + behind[i];
+
     printf("Data preprocessing starts!\n");
-    unsigned long long *rows_addr;
-    rows_addr = (unsigned long long *)malloc(sizeof(unsigned long long)*(dim+1));
 
-    par_sort(n_edge, dim, front, behind, rows_addr);
+    qsort(edges, n_edge, sizeof(unsigned long long), comp_ll);
+    printf("Edges sorted!\n");
 
-    short *vld;
-    vld = (short *)malloc(sizeof(short)*n_edge);
-    if (front[0] == behind[0])
-        vld[0] = 0;
-    else
-        vld[0] = 1;
-        
+    char *vld;
+    vld = (char *)malloc(sizeof(char)*n_edge);
+    #pragma omp parallel for
+    for (i = 0; i < n_edge; i++)
+    {
+        front[i] = edges[i]/dim;
+        behind[i] = edges[i]%dim;
+        vld[i] = (front[i] == behind[i]) ? 0 : 1;
+    }
+    free(edges);        
+
     #pragma omp parallel for
     for (i = 1; i < n_edge; i++)
     {
-        if (front[i] == behind[i])
+        if ((front[i] == front[i-1]) && (behind[i] == behind[i-1]))
             vld[i] = 0;
-        else
-        {
-            if (front[i] == front[i-1])
-            {
-                if (behind[i] == behind[i-1])
-                    vld[i] = 0;
-                else
-                    vld[i] = 1;
-            }
-            else
-                vld[i] = 1;
-        }
     }
-
+    
     unsigned long long num = 0;
-    unsigned long long *vidx;
-    vidx = (unsigned long long *)malloc(sizeof(unsigned long long)*n_edge);
+    //#pragma omp parallel for reduction(+:num)
     for (i = 0; i < n_edge; i++)
-    {
         num += vld[i];
-        if (vld[i] > 0)
-            vidx[i] = num-1;
-        else
-            vidx[i] = 0;
-    }
-        
+    
     printf("The number of effective edges is %lld.\n", num);
 
-    unsigned long *row_0;
-    unsigned long *col_0;
-    unsigned long *col;
-    unsigned long *row;
-    row_0 = (unsigned long *)malloc(sizeof(unsigned long)*num);
-    col_0 = (unsigned long *)malloc(sizeof(unsigned long)*num);
-    col = (unsigned long *)malloc(sizeof(unsigned long)*num);
-    row = (unsigned long *)malloc(sizeof(unsigned long)*num);
-    //printf("Sub 1.0\n");
-    #pragma omp parallel for
+    unsigned int *row_0;
+    unsigned int *col_0;
+    row_0 = (unsigned int *)malloc(sizeof(unsigned int)*num);
+    col_0 = (unsigned int *)malloc(sizeof(unsigned int)*num);
+    long long p_count = 0;
     for (i = 0; i < n_edge; i++)
     {
-        if (vld[i] > 0)
+        if (vld[i] == 1)
         {
-            long long idx = vidx[i];
-            row_0[idx] = front[i];
-            col_0[idx] = behind[i];
-            row[idx] = front[i];
-            col[idx] = behind[i];
+            row_0[p_count] = front[i];
+            col_0[p_count] = behind[i];
+            p_count++;
         }
     }
 
     free(front);
     free(behind);
+    free(vld);
 
-    unsigned long *r_count;
-    r_count = (unsigned long *)malloc(sizeof(unsigned long)*dim);
+    unsigned int *rows_count;
+    rows_count = (unsigned int *)malloc(sizeof(unsigned int)*dim);
+    unsigned int *cols_count;
+    cols_count = (unsigned int *)malloc(sizeof(unsigned int)*dim);
+
     #pragma omp parallel for
     for (i = 0; i < dim; i++)
-        r_count[i] = 0;
-    
+    {
+        rows_count[i] = 0;
+        cols_count[i] = 0;
+    }
+        
+    // 有累加关系，暂时不并行
     for (i = 0; i < num; i++)
-        r_count[row_0[i]]++;
-
-    rows_addr[0] = 0;
-    for (i = 1; i <= dim; i++)
-        rows_addr[i] = rows_addr[i-1] + r_count[i-1];
-    free(r_count);
-
+    {
+        rows_count[row_0[i]]++; 
+        cols_count[col_0[i]]++; 
+    }
+        
+    unsigned long long *rows_addr;
+    rows_addr = (unsigned long long *)malloc(sizeof(unsigned long long)*(dim+1));
     unsigned long long *cols_addr;
-    cols_addr = (unsigned long long *)malloc((sizeof(unsigned long long))*(dim+1));
+    cols_addr = (unsigned long long *)malloc(sizeof(unsigned long long)*(dim+1));
+    
+    rows_addr[0] = 0;
+    cols_addr[0] = 0;
+    for (i = 1; i <= dim; i++)
+    {
+        rows_addr[i] = rows_addr[i-1] + rows_count[i-1];
+        cols_addr[i] = cols_addr[i-1] + cols_count[i-1];
+    }
+        
+    free(rows_count);
+    free(cols_count);
 
-    par_sort(num, dim, col, row, cols_addr);
+    // 将列进行排序，复用行排序结果
+    
+    unsigned long long *coloc;
+    coloc = (unsigned long long *)malloc(sizeof(unsigned long long)*dim);
+    #pragma omp parallel for
+    for (i = 0; i < dim; i++)
+        coloc[i] = cols_addr[i];
+
+    unsigned int *row_b;
+    unsigned int *col_b;
+    row_b = (unsigned int *)malloc(sizeof(unsigned int)*num);
+    col_b = (unsigned int *)malloc(sizeof(unsigned int)*num);
+
+    for (i = 0; i < num; i++)
+    {
+        long long k = coloc[col_0[i]];
+        col_b[k] = col_0[i];
+        row_b[k] = row_0[i];
+        coloc[col_0[i]]++;
+    }
+    free(coloc);
     
     printf("Data preprocessing is completed!\n");
 
@@ -268,26 +223,24 @@ int main(int argc, char const *argv[])
     #pragma omp parallel for
     for (i = 0; i < num; i++)
     {
-        unsigned long rid = row_0[i];
-        unsigned long cid = col_0[i];
+        unsigned int rid = row_0[i];
+        unsigned int cid = col_0[i];
         
         unsigned long long r_loc = rows_addr[rid];
         unsigned long long c_loc = cols_addr[cid];
         unsigned long long rl_n = rows_addr[rid+1];
         unsigned long long cl_n = cols_addr[cid+1];
-        unsigned long long r_chs = rl_n - r_loc;
-        unsigned long long c_chs = cl_n - c_loc;
 
         val_mx[i] = 0;
         while ((r_loc < rl_n) && (c_loc < cl_n))
         {
-            if (col_0[r_loc] == row[c_loc])
+            if (col_0[r_loc] == row_b[c_loc])
             {
                 val_mx[i]++;
                 r_loc++;
                 c_loc++;
             }
-            else if (col_0[r_loc] > row[c_loc])
+            else if (col_0[r_loc] > row_b[c_loc])
                 c_loc++;
             else
                 r_loc++;
@@ -299,7 +252,7 @@ int main(int argc, char const *argv[])
     }
 
     unsigned long long tri_ttl = 0;
-    #pragma omp parallel for reduction(+:tri_ttl)
+    //#pragma omp parallel for reduction(+:tri_ttl)
     for (i = 0; i < num; i++)
         tri_ttl += val_mx[i];
 
@@ -308,8 +261,8 @@ int main(int argc, char const *argv[])
 
     free(col_0);
     free(row_0);
-    free(col);
-    free(row);
+    free(col_b);
+    free(row_b);
     free(rows_addr);
     free(cols_addr);
     free(val_mx);
