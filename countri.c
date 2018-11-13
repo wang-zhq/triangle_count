@@ -26,12 +26,9 @@ unsigned long long get_filesize(char const *filename)
     return size;
 }
 
-int comp_ll(const void *a, const void *b)
+int comp_uint(const void *a, const void *b)
 {
-    if (*(unsigned long long *)a < *(unsigned long long *)b)
-        return -1;
-    else
-        return 1;
+    return ((*(unsigned int *)a < *(unsigned int *)b) ? -1 : 1);
 }
 
 int main(int argc, char const *argv[])
@@ -96,34 +93,89 @@ int main(int argc, char const *argv[])
     close(fp);
 
     unsigned long long dim = 0;
-    //#pragma omp parallel for reduction(>:dim)
     for (i = 0; i < n_edge; i++)
         dim = (behind[i] > dim) ? behind[i] : dim;
 
     dim++;
     printf("The quantity of nodes is %lld.\n", dim);
 
-    unsigned long long * edges;
-    edges = (unsigned long long *)malloc(sizeof(unsigned long long)*n_edge);
-    #pragma omp parallel for
-    for (i = 0; i < n_edge; i++)
-        edges[i] = front[i]*dim + behind[i];
-
     printf("Data preprocessing starts!\n");
+    unsigned int *f_count;
+    f_count = (unsigned int *)malloc(sizeof(unsigned int)*dim);
+    #pragma omp parallel for
+    for (i = 0; i < dim; i++)
+        f_count[i] = 0;
 
-    qsort(edges, n_edge, sizeof(unsigned long long), comp_ll);
+    for (i = 0; i < n_edge; i++)
+        f_count[front[i]]++;
+
+    unsigned long long *f_addr;
+    f_addr =  (unsigned long long *)malloc(sizeof(unsigned long long)*(dim+1));
+    f_addr[0] = 0;
+    for (i = 1; i <= dim; i++)
+        f_addr[i] = f_addr[i-1] + f_count[i-1];
+
+    unsigned int *b_bak;
+    b_bak = (unsigned int *)malloc(sizeof(unsigned int)*n_edge);
+    for (i = 0; i < n_edge; i++)
+    {
+        b_bak[f_addr[front[i]]] = behind[i];
+        f_addr[front[i]]++;
+    }
+
+    #pragma omp parallel for
+    for (i = 0; i < dim; i++)
+    {
+        if (f_count[i] == 1)
+        {
+            front[f_addr[i]-1] = i;
+            behind[f_addr[i]-1] = b_bak[f_addr[i]-1];
+        }
+        else if (f_count[i] == 2)
+        {
+            front[f_addr[i]-2] = i;
+            front[f_addr[i]-1] = i;
+            if (b_bak[f_addr[i]-2] < b_bak[f_addr[i]-1])
+            {
+                behind[f_addr[i]-2] = b_bak[f_addr[i]-2];
+                behind[f_addr[i]-1] = b_bak[f_addr[i]-1];
+            }
+            else
+            {
+                behind[f_addr[i]-2] = b_bak[f_addr[i]-1];
+                behind[f_addr[i]-1] = b_bak[f_addr[i]-2];
+            }
+        }
+        else if (f_count[i] > 2)
+        {
+            unsigned int* b_sec;
+            b_sec = (unsigned int *)malloc(sizeof(unsigned int)*f_count[i]);
+            long long k, fli;
+            for (k = 0; k < f_count[i]; k++)
+            {
+                fli = f_addr[i] - f_count[i] + k;
+                b_sec[k] = b_bak[fli];
+                front[fli] = i;
+            }
+
+            qsort(b_sec, f_count[i], sizeof(unsigned int), comp_uint);
+            for (k = 0; k < f_count[i]; k++)
+                behind[f_addr[i] - f_count[i] + k] = b_sec[k];
+
+            free(b_sec);
+        }
+    }
+    free(f_count);
+    free(f_addr);
+    free(b_bak);
+
     printf("Edges sorted!\n");
 
     char *vld;
     vld = (char *)malloc(sizeof(char)*n_edge);
     #pragma omp parallel for
     for (i = 0; i < n_edge; i++)
-    {
-        front[i] = edges[i]/dim;
-        behind[i] = edges[i]%dim;
-        vld[i] = (front[i] == behind[i]) ? 0 : 1;
-    }
-    free(edges);        
+        vld[i] = (front[i] == behind[i]) ? 0 : 1;       
 
     #pragma omp parallel for
     for (i = 1; i < n_edge; i++)
@@ -131,11 +183,15 @@ int main(int argc, char const *argv[])
         if ((front[i] == front[i-1]) && (behind[i] == behind[i-1]))
             vld[i] = 0;
     }
-    
+
     unsigned long long num = 0;
-    //#pragma omp parallel for reduction(+:num)
+    long long *v_loc;
+    v_loc = (long long *)malloc(sizeof(long long)*n_edge);
     for (i = 0; i < n_edge; i++)
+    {
+        v_loc[i] = num;
         num += vld[i];
+    }
     
     printf("The number of effective edges is %lld.\n", num);
 
@@ -143,20 +199,20 @@ int main(int argc, char const *argv[])
     unsigned int *col_0;
     row_0 = (unsigned int *)malloc(sizeof(unsigned int)*num);
     col_0 = (unsigned int *)malloc(sizeof(unsigned int)*num);
-    long long p_count = 0;
+    #pragma omp parallel for
     for (i = 0; i < n_edge; i++)
     {
-        if (vld[i] == 1)
+        if (vld[i])
         {
-            row_0[p_count] = front[i];
-            col_0[p_count] = behind[i];
-            p_count++;
+            row_0[v_loc[i]] = front[i];
+            col_0[v_loc[i]] = behind[i];
         }
     }
 
     free(front);
     free(behind);
     free(vld);
+    free(v_loc);
 
     unsigned int *rows_count;
     rows_count = (unsigned int *)malloc(sizeof(unsigned int)*dim);
@@ -194,7 +250,6 @@ int main(int argc, char const *argv[])
     free(cols_count);
 
     // 将列进行排序，复用行排序结果
-    
     unsigned long long *coloc;
     coloc = (unsigned long long *)malloc(sizeof(unsigned long long)*dim);
     #pragma omp parallel for
@@ -223,15 +278,19 @@ int main(int argc, char const *argv[])
     #pragma omp parallel for
     for (i = 0; i < num; i++)
     {
-        unsigned int rid = row_0[i];
-        unsigned int cid = col_0[i];
-        
-        unsigned long long r_loc = rows_addr[rid];
-        unsigned long long c_loc = cols_addr[cid];
-        unsigned long long rl_n = rows_addr[rid+1];
-        unsigned long long cl_n = cols_addr[cid+1];
-
         val_mx[i] = 0;
+
+        unsigned long long r_loc = rows_addr[row_0[i]];
+        unsigned long long c_loc = cols_addr[col_0[i]];
+        unsigned long long rl_n = rows_addr[row_0[i]+1];
+        unsigned long long cl_n = cols_addr[col_0[i]+1];
+        
+        if (col_0[r_loc] > row_b[cl_n-1])
+            continue;
+
+        if (col_0[rl_n-1] < row_b[c_loc])
+            continue;
+
         while ((r_loc < rl_n) && (c_loc < cl_n))
         {
             if (col_0[r_loc] == row_b[c_loc])
@@ -252,7 +311,7 @@ int main(int argc, char const *argv[])
     }
 
     unsigned long long tri_ttl = 0;
-    //#pragma omp parallel for reduction(+:tri_ttl)
+    #pragma omp parallel for reduction(+:tri_ttl)
     for (i = 0; i < num; i++)
         tri_ttl += val_mx[i];
 
